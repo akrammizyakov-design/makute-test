@@ -153,7 +153,7 @@ async function transition(r,a,comment,file){
 function renderLogin(){
   const L=st.login;
   return `<main class="auth"><form class="authbox" data-form="login">
-    <div class="logo big">ДО</div><h1>Документооборот</h1><p class="muted">Тестовая версия · логин и пароль выдаёт руководитель</p>
+    <div class="logo big">makute</div><h1>Документооборот</h1><p class="muted">Тестовая версия · логин и пароль выдаёт руководитель</p>
     <div class="fld"><label for="lu">Логин</label><input id="lu" type="text" autocomplete="username" autocapitalize="off" value="${esc(L.u||"")}" required></div>
     <div class="fld"><label for="lp">Пароль</label><input id="lp" type="password" autocomplete="current-password" required></div>
     ${L.err?`<div class="err">${esc(L.err)}</div>`:""}
@@ -184,7 +184,7 @@ function render(){
   const turnCount=st.reqs.filter(myTurn).length;
   const canNotify="Notification" in window&&Notification.permission==="default";
   const top=`<div class="demo"><b>Документооборот · тест</b><span class="sp"></span>${canNotify?`<button data-act="notif">${ic("bell")} Включить уведомления</button>`:""}<span class="who">${esc(u.name)} · ${ROLE[u.role].toLowerCase()}</span><button data-act="logout" aria-label="Выйти">${ic("out")}</button></div>`;
-  const side=`<nav class="side" aria-label="Разделы"><div class="brand"><div class="logo">ДО</div><div><span>Документооборот</span></div></div>
+  const side=`<nav class="side" aria-label="Разделы"><div class="brand"><div class="logo">makute</div><div><span>Документооборот</span></div></div>
     ${views.map(v=>`<button class="nav ${st.view===v[0]?"on":""}" data-act="view" data-v="${v[0]}">${ic(v[2])}<span>${v[1]}</span>${v[0]==="list"&&turnCount?`<span class="cnt">${turnCount}</span>`:""}</button>`).join("")}
     <div class="me"><b>${esc(u.name)}</b>${ROLE[u.role]}</div></nav>`;
   const main=st.view==="dash"?renderDash():st.view==="users"?renderUsers():renderList()+renderDetail();

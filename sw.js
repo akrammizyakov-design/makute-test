@@ -1,6 +1,6 @@
 // Service worker: нужен для установки на главный экран и показа уведомлений.
 // Кэшируем только оболочку приложения; данные всегда берутся с сервера.
-const CACHE = "docflow-v2";
+const CACHE = "docflow-v3";
 const SHELL = ["./", "index.html", "app.js", "config.js", "manifest.json", "icon-192.png", "icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {

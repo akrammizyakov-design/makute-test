@@ -1,6 +1,6 @@
 {
   "name": "Документооборот",
-  "short_name": "Документы",
+  "short_name": "makute",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
