@@ -16,6 +16,7 @@ const STATUS={
   cancelled:{label:"Отменена",turn:null}
 };
 const ROLE={mgr:"Менеджер",acc:"Бухгалтер",head:"Руководитель"};
+const TABS=["sent_acc","work","clar","sent_mgr","done","cancelled"];
 const STUCK_DAYS=2, D=864e5, H=36e5;
 const ACTIONS={
   mgr:[
@@ -28,14 +29,14 @@ const ACTIONS={
   acc:[
     {id:"return",label:"Вернуть на доработку",kind:"sec",from:["sent_acc","work"],to:"clar",cmt:"req"},
     {id:"take",label:"Взять в работу",kind:"pri",from:["sent_acc"],to:"work",cmt:"opt"},
-    {id:"send",label:"Отправить менеджеру",kind:"pri",from:["work"],to:"sent_mgr",cmt:"opt",file:"req"},
+    {id:"send",label:"Отправить менеджеру",kind:"pri",from:["work"],to:"sent_mgr",cmt:"opt",file:"opt"},
     {id:"forceDone",label:"Закрыть за менеджера",kind:"ghost",from:["sent_mgr"],to:"done",cmt:"req"},
     {id:"reopen",label:"Переоткрыть",kind:"sec",from:["done"],to:"work",cmt:"req"},
     {id:"cancel",label:"Отменить заявку",kind:"ghost",from:["sent_acc","work","clar"],to:"cancelled",cmt:"req"}]
 };
-const HINT={take:"Заявка закрепится за вами, менеджер получит уведомление.",return:"Напишите, чего не хватает. Заявка вернётся менеджеру.",send:"Приложите ЭСФ или другой документ. Заявка уйдёт менеджеру.",done:"Заявка закроется и уйдёт в архив. Её можно будет переоткрыть.",remark:"Опишите ошибку. Заявка вернётся бухгалтеру.",answer:"Ответьте на вопрос бухгалтера. Заявка вернётся в работу.",withdraw:"Бухгалтер ещё не взял заявку. Она будет отменена.",cancel:"Заявка будет отменена. Вторая сторона получит уведомление.",reopen:"Заявка вернётся в работу к бухгалтеру.",forceDone:"Используйте, если менеджер не может подтвердить сам (например, уволился)."};
+const HINT={take:"Заявка закрепится за вами, менеджер получит уведомление.",return:"Напишите, чего не хватает. Заявка вернётся менеджеру.",send:"Заявка уйдёт менеджеру. При необходимости приложите документ.",done:"Заявка закроется и уйдёт в архив. Её можно будет переоткрыть.",remark:"Опишите ошибку. Заявка вернётся бухгалтеру.",answer:"Ответьте на вопрос бухгалтера. Заявка вернётся в работу.",withdraw:"Бухгалтер ещё не взял заявку. Она будет отменена.",cancel:"Заявка будет отменена. Вторая сторона получит уведомление.",reopen:"Заявка вернётся в работу к бухгалтеру.",forceDone:"Используйте, если менеджер не может подтвердить сам (например, уволился)."};
 
-const st={view:"list",sel:null,filter:"all",q:"",detail:false,modal:null,draft:"",pend:null,toast:null,users:[],reqs:[],msgs:[],me:null,uid:null,ready:false,busy:false,login:{}};
+const st={view:"list",sel:null,tab:"sent_acc",mgrF:null,authMode:"login",q:"",detail:false,modal:null,draft:"",pend:null,toast:null,users:[],reqs:[],msgs:[],me:null,uid:null,ready:false,busy:false,login:{}};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const me=()=>st.me;
@@ -75,17 +76,12 @@ function actionsFor(r){
   return (ACTIONS[u.role]||[]).filter(a=>a.from.includes(r.status));
 }
 function filtered(){
-  let L=st.reqs.slice(); const f=st.filter;
-  if(f==="mine") L=L.filter(myTurn);
-  else if(f==="open") L=L.filter(r=>!["done","cancelled"].includes(r.status));
-  else if(f==="done") L=L.filter(r=>r.status==="done");
-  else if(f==="cancelled") L=L.filter(r=>r.status==="cancelled");
-  else if(f.startsWith("s:")) L=L.filter(r=>r.status===f.slice(2));
-  else if(f.startsWith("m:")) L=L.filter(r=>r.mgr===f.slice(2));
-  if(st.q.trim()){const q=st.q.trim().toLowerCase();L=L.filter(r=>(r.no+" "+r.real+" "+r.client+" "+user(r.mgr).name).toLowerCase().includes(q));}
-  const rank=r=>myTurn(r)?0:1;
-  return L.sort((a,b)=>rank(a)-rank(b)||T(b.last_msg||b.created)-T(a.last_msg||a.created));
+  let L=st.reqs.filter(r=>r.status===st.tab);
+  if(st.mgrF) L=L.filter(r=>r.mgr===st.mgrF);
+  if(st.q.trim()){const q=st.q.trim().toLowerCase();L=L.filter(r=>(r.no+" "+(r.kind||"")+" "+(r.real||"")+" "+r.client+" "+user(r.mgr).name).toLowerCase().includes(q));}
+  return L.sort((a,b)=>T(b.last_msg||b.created)-T(a.last_msg||a.created));
 }
+const kindText=r=>r.kind?r.kind:(r.real?"Реализация № "+r.real:"—");
 
 /* ---------- данные и подписки (Realtime Database) ---------- */
 let offs=[];
@@ -125,14 +121,22 @@ async function saveFile(f,rid){
   await ref.set({name:f.name,type:f.type||"application/octet-stream",size:f.size,data:await readFile(f),req:rid||"",by:st.uid,created:TS});
   return {id:ref.key,name:f.name,size:f.size};
 }
+// Файл загружается из базы, затем показывается окно с кнопками «Скачать / Открыть / Поделиться».
+// Ссылки нажимает сам пользователь — так скачивание работает и на телефоне, и в установленном приложении.
 async function openFile(meta){
+  st.modal={type:"file",loading:true}; render();
   try{
-    const w=window.open("","_blank");
     const s=await db.ref("files/"+meta.id).once("value"); const v=s.val(); if(!v) throw new Error("Файл не найден");
     const bin=atob(v.data), arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
-    const url=URL.createObjectURL(new Blob([arr],{type:v.type}));
-    if(w) w.location.href=url; else { const a=document.createElement("a");a.href=url;a.download=v.name;a.click(); }
-  }catch(e){toast("Не удалось открыть файл: "+errText(e));}
+    const type=v.type||"application/octet-stream";
+    const blob=new Blob([arr],{type});
+    if(st.fileUrl) URL.revokeObjectURL(st.fileUrl);
+    st.fileUrl=URL.createObjectURL(blob);
+    let fileObj=null; try{fileObj=new File([blob],v.name,{type});}catch(x){}
+    const canShare=!!(fileObj&&navigator.canShare&&navigator.canShare({files:[fileObj]}));
+    st.modal={type:"file",name:v.name,size:v.size||arr.length,url:st.fileUrl,fileObj,canShare};
+  }catch(e){st.modal=null;toast("Не удалось загрузить файл: "+errText(e));}
+  render();
 }
 async function addMsg(rid,data){
   const ref=db.ref("messages/"+rid).push();
@@ -152,12 +156,21 @@ async function transition(r,a,comment,file){
 /* ---------- экраны входа ---------- */
 function renderLogin(){
   const L=st.login;
+  if(st.authMode==="forgot") return `<main class="auth"><form class="authbox" data-form="forgot">
+    <div class="logo big">makute</div><h1>Восстановление пароля</h1>
+    <p class="muted">Для руководителя: введите свою почту, мы пришлём ссылку для смены пароля. Менеджерам и бухгалтерам пароль сбрасывает руководитель.</p>
+    ${L.sent?`<div class="okmsg">Если такая почта есть в системе, письмо уже отправлено. Проверьте входящие и папку «Спам».</div>`:`
+    <div class="fld"><label for="fe">Почта</label><input id="fe" type="email" autocomplete="email" autocapitalize="off" value="${esc(L.u&&L.u.includes("@")?L.u:"")}" required></div>
+    ${L.err?`<div class="err">${esc(L.err)}</div>`:""}
+    <button class="btn pri" type="submit" ${st.busy?"disabled":""}>${st.busy?"Отправляем…":"Отправить ссылку"}</button>`}
+    <button class="btn ghost" type="button" data-act="tologin">Вернуться ко входу</button></form></main>`;
   return `<main class="auth"><form class="authbox" data-form="login">
     <div class="logo big">makute</div><h1>Документооборот</h1><p class="muted">Тестовая версия · логин и пароль выдаёт руководитель</p>
-    <div class="fld"><label for="lu">Логин</label><input id="lu" type="text" autocomplete="username" autocapitalize="off" value="${esc(L.u||"")}" required></div>
+    <div class="fld"><label for="lu">Логин (руководитель — почта)</label><input id="lu" type="text" autocomplete="username" autocapitalize="off" value="${esc(L.u||"")}" required></div>
     <div class="fld"><label for="lp">Пароль</label><input id="lp" type="password" autocomplete="current-password" required></div>
     ${L.err?`<div class="err">${esc(L.err)}</div>`:""}
-    <button class="btn pri" type="submit" ${st.busy?"disabled":""}>${st.busy?"Входим…":"Войти"}</button></form></main>`;
+    <button class="btn pri" type="submit" ${st.busy?"disabled":""}>${st.busy?"Входим…":"Войти"}</button>
+    <button class="btn ghost" type="button" data-act="forgot">Забыли пароль?</button></form></main>`;
 }
 function renderChangePw(){
   const L=st.login;
@@ -179,7 +192,7 @@ function render(){
   if(st.me.must_change_pw){root.innerHTML=renderChangePw();return;}
   if(!st.ready){root.innerHTML=`<div class="placeholder">Загрузка…</div>`;return;}
   const u=me();
-  const views=u.role==="head"?[["dash","Дашборд","chart"],["list","Все заявки","list"],["users","Сотрудники","users"]]:[["list",u.role==="mgr"?"Мои заявки":"Заявки","list"]];
+  const views=u.role==="head"?[["dash","Дашборд","chart"],["list","Заявки","list"],["users","Сотрудники","users"]]:[["list","Заявки","list"]];
   if(!views.find(v=>v[0]===st.view)) st.view=views[0][0];
   const turnCount=st.reqs.filter(myTurn).length;
   const canNotify="Notification" in window&&Notification.permission==="default";
@@ -198,18 +211,16 @@ function render(){
 
 function renderList(){
   const u=me(), L=filtered();
-  const chips=[["all","Все"],["mine","Ждут меня · "+st.reqs.filter(myTurn).length],["open","Открытые"],["done","Исполнено"],["cancelled","Отменены"]];
-  let extra="";
-  if(st.filter.startsWith("s:")) extra=`<button class="chip on" data-act="filter" data-f="all">${STATUS[st.filter.slice(2)].label} ✕</button>`;
-  if(st.filter.startsWith("m:")) extra=`<button class="chip on" data-act="filter" data-f="all">${esc(user(st.filter.slice(2)).name)} ✕</button>`;
+  const cnt=t=>st.reqs.filter(r=>r.status===t&&(!st.mgrF||r.mgr===st.mgrF)).length;
+  const extra=st.mgrF?`<button class="chip on" data-act="mgrclear">${esc(user(st.mgrF).name)} ✕</button>`:"";
   const items=L.length?L.map(r=>`<button class="item ${st.sel===r.id?"on":""}" data-act="open" data-id="${r.id}">
     <div class="r1"><b>#${r.no}</b>${unread(r)?`<span class="unr">новое</span>`:""}<span class="when">${when(r.last_msg||r.created)}</span></div>
-    <div class="r2">Реализация № ${esc(r.real)} · ${esc(r.client)}${u.role!=="mgr"?"<br>"+esc(user(r.mgr).name):""}</div>
+    <div class="r2">${esc(kindText(r))} · ${esc(r.client)}${u.role!=="mgr"?"<br>"+esc(user(r.mgr).name):""}</div>
     <div class="r3">${stp(r.status)}${r.returns?`<span class="ret">возвратов: ${r.returns}</span>`:""}<span class="turn ${myTurn(r)?"myturn":""}">${turnText(r)}</span></div></button>`).join("")
-    :`<div class="empty">${st.q?"Ничего не найдено. Проверьте номер реализации или имя клиента.":u.role==="mgr"&&st.filter==="all"?"Заявок пока нет. Создайте первую кнопкой «Новая заявка».":"В этом фильтре заявок нет."}</div>`;
-  return `<section class="listcol"><div class="lhead"><h1>${u.role==="mgr"?"Мои заявки":"Заявки"}</h1></div>
-    <label class="search">${ic("search")}<input id="q" type="text" placeholder="№ реализации, клиент${u.role!=="mgr"?", менеджер":""}" value="${esc(st.q)}" data-on="q" aria-label="Поиск"></label>
-    <div class="chips">${extra}${chips.filter(c=>!extra||c[0]!=="all").map(c=>`<button class="chip ${st.filter===c[0]?"on":""}" data-act="filter" data-f="${c[0]}">${c[1]}</button>`).join("")}</div>
+    :`<div class="empty">${st.q?"Ничего не найдено. Проверьте номер заявки, вид запроса или клиента.":"В этой вкладке заявок нет."}</div>`;
+  return `<section class="listcol"><div class="lhead"><h1>Заявки</h1></div>
+    <label class="search">${ic("search")}<input id="q" type="text" placeholder="№ заявки, вид запроса, клиент${u.role!=="mgr"?", менеджер":""}" value="${esc(st.q)}" data-on="q" aria-label="Поиск"></label>
+    <div class="chips" role="tablist">${extra}${TABS.map(t=>`<button class="chip ${st.tab===t?"on":""}" role="tab" aria-selected="${st.tab===t}" data-act="tab" data-t="${t}">${STATUS[t].label} · ${cnt(t)}</button>`).join("")}</div>
     <div class="listwrap"><div class="items">${items}</div>
     ${u.role==="mgr"?`<button class="fab" data-act="new">${ic("plus")}Новая заявка</button>`:""}</div></section>`;
 }
@@ -219,7 +230,7 @@ function renderDetail(){
   if(!r) return `<div class="placeholder">Выберите заявку в списке</div>`;
   const u=me();
   const fileBtn=f=>f&&f.id?`<button class="file" data-act="file" data-fid="${esc(f.id)}">${ic("file")}<span>${esc(f.name)}</span><small>${kb(f.size||0)}</small></button>`:"";
-  const first=`<div class="msg ${r.mgr===st.uid?"mine":""}"><div class="mh"><b>${esc(user(r.mgr).name)}</b> менеджер · ${when(r.created)} · накладная</div>
+  const first=`<div class="msg ${r.mgr===st.uid?"mine":""}"><div class="mh"><b>${esc(user(r.mgr).name)}</b> менеджер · ${when(r.created)} · создал заявку</div>
     <div class="bub">${r.comment?esc(r.comment):""}${fileBtn(r.invoice)}</div></div>`;
   const msgs=st.msgs.map(m=>{
     if(m.sys) return `<div class="sys">Статус: <b>${STATUS[m.status]?STATUS[m.status].label:esc(m.status)}</b>${m.author?" · "+esc(user(m.author).name):""} · ${when(m.created)}</div>`;
@@ -238,7 +249,7 @@ function renderDetail(){
        <button class="icb send" data-act="sendmsg" aria-label="Отправить" ${st.busy?"disabled":""}>${ic("send")}</button></div>`;
   }
   return `<section class="detail"><div class="dhead"><button class="back" data-act="back" aria-label="Назад к списку">${ic("back")}</button>
-    <div class="dt"><h2>Заявка #${r.no}</h2><div class="meta">Реализация № ${esc(r.real)} · ${esc(r.client)}<br>Менеджер: ${esc(user(r.mgr).name)}${r.acc?" · Бухгалтер: "+esc(user(r.acc).name):""}</div>
+    <div class="dt"><h2>Заявка #${r.no}</h2><div class="meta">${esc(kindText(r))} · ${esc(r.client)}<br>Менеджер: ${esc(user(r.mgr).name)}${r.acc?" · Бухгалтер: "+esc(user(r.acc).name):""}</div>
     <div class="strow">${stp(r.status)}${r.returns?`<span class="ret">возвратов на уточнение: ${r.returns}</span>`:""}<span class="turn ${myTurn(r)?"myturn":""}">${turnText(r)}</span></div></div></div>
     <div class="chat">${first}${msgs}</div>${bottom}</section>`;
 }
@@ -266,7 +277,7 @@ function renderUsers(){
   <div class="box"><table><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Статус</th><th></th></tr>
   ${st.users.map(x=>`<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.username)}</td><td><span class="role role-${x.role}">${ROLE[x.role]||"—"}</span></td><td class="${x.active?"":"muted"}">${x.active?(x.must_change_pw?"Ещё не входил":"Активен"):"Заблокирован"}</td>
    <td style="white-space:nowrap">${x.id===st.uid?`<span class="muted">это вы</span>`:`<button class="linkb" data-act="block" data-id="${x.id}">${x.active?"Заблокировать":"Разблокировать"}</button>`}</td></tr>`).join("")}
-  </table></div><p class="muted" style="margin-top:12px;font-size:13px">В тестовой версии сброс пароля делается в консоли Firebase (Authentication). В рабочей версии будет кнопка «Сбросить пароль».</p></main>`;
+  </table></div><p class="muted" style="margin-top:12px;font-size:13px">В тестовой версии кнопки «Сбросить пароль» нет: если менеджер или бухгалтер забыл пароль, заблокируйте его и создайте новый логин. Руководитель восстанавливает свой пароль сам — по ссылке «Забыли пароль?» на экране входа. В рабочей версии будет кнопка «Сбросить пароль».</p></main>`;
 }
 
 function renderModal(){
@@ -281,22 +292,32 @@ function renderModal(){
     ${a.file?fileField("Файл",a.file==="req"):""}${M.err?`<div class="err">${esc(M.err)}</div>`:""}${btns(a.label,a.kind==="ghost"?"sec":a.kind,"confirm")}`;
   }
   if(M.type==="new"){
-    const dup=M.real&&st.reqs.find(r=>r.real===M.real.trim()&&!["done","cancelled"].includes(r.status));
     body=`<h3>Новая заявка</h3>
-    <div class="fld"><label for="nr">Номер реализации</label><input id="nr" type="text" inputmode="numeric" value="${esc(M.real||"")}" data-on="nreal"></div>
-    ${dup?`<div class="warn">По реализации № ${esc(M.real)} уже есть открытая заявка #${dup.no}. Проверьте, не дубль ли это.</div>`:""}
+    <div class="fld"><label for="nk">Вид запроса</label><input id="nk" type="text" value="${esc(M.kind||"")}" placeholder="Например: выставить ЭСФ"></div>
     <div class="fld"><label for="ncl">Клиент</label><input id="ncl" type="text" value="${esc(M.client||"")}" placeholder="ТОО или ИП"></div>
-    ${fileField("Накладная",true)}
-    <div class="fld"><label for="mc">Комментарий (необязательно)</label><textarea id="mc" placeholder="Например: срочно, клиент ждёт до пятницы">${esc(M.c||"")}</textarea></div>
+    <div class="fld"><label for="mc">Комментарий</label><textarea id="mc" placeholder="Например: срочно, клиент ждёт до пятницы">${esc(M.c||"")}</textarea></div>
+    ${fileField("Файл",false)}
     ${M.err?`<div class="err">${esc(M.err)}</div>`:""}${btns("Отправить в бухгалтерию","pri","create")}`;
   }
   if(M.type==="adduser"){
     body=`<h3>Новый сотрудник</h3>
     <div class="fld"><label for="un">ФИО</label><input id="un" type="text" value="${esc(M.name||"")}"></div>
-    <div class="fld"><label for="ul">Логин (латиницей, например a.seitov)</label><input id="ul" type="text" autocapitalize="off" value="${esc(M.login||"")}"></div>
-    <div class="fld"><label for="ur">Роль</label><select id="ur">${["mgr","acc","head"].map(r=>`<option value="${r}" ${M.role===r?"selected":""}>${ROLE[r]}</option>`).join("")}</select></div>
+    <div class="fld"><label for="ur">Роль</label><select id="ur" data-on="urole">${["mgr","acc","head"].map(r=>`<option value="${r}" ${M.role===r?"selected":""}>${ROLE[r]}</option>`).join("")}</select></div>
+    ${M.role==="head"
+      ?`<div class="fld"><label for="ul">Почта руководителя (для входа и восстановления пароля)</label><input id="ul" type="email" autocapitalize="off" value="${esc(M.login||"")}" placeholder="name@gmail.com"></div>`
+      :`<div class="fld"><label for="ul">Логин (латиницей, например a.seitov)</label><input id="ul" type="text" autocapitalize="off" value="${esc(M.login||"")}"></div>`}
     <p>Временный пароль сгенерируется автоматически. Сотрудник сменит его при первом входе.</p>
     ${M.err?`<div class="err">${esc(M.err)}</div>`:""}${btns("Добавить","pri","saveuser")}`;
+  }
+  if(M.type==="file"){
+    if(M.loading) body=`<h3>Загружаем файл…</h3><p>Секунду.</p>`;
+    else body=`<h3>${esc(M.name)}</h3><p>${kb(M.size)}</p>
+    <div class="filebtns">
+      <a class="btn pri" href="${M.url}" download="${esc(M.name)}">Скачать</a>
+      <a class="btn sec" href="${M.url}" target="_blank" rel="noopener">Открыть</a>
+      ${M.canShare?`<button class="btn sec" data-act="sharefile">Поделиться / сохранить в Файлы</button>`:""}
+    </div>
+    <div class="mrow"><button class="btn ghost" data-act="close">Закрыть</button></div>`;
   }
   if(M.type==="pw"){
     body=`<h3>${esc(M.title)}</h3><p>Передайте сотруднику ссылку, логин и временный пароль. При первом входе он задаст свой пароль.</p>
@@ -309,13 +330,13 @@ function renderModal(){
 let tt;
 function toast(t){st.toast=t;clearTimeout(tt);const el=$(".toast");if(el)el.textContent=t;else{const d=document.createElement("div");d.className="toast";d.setAttribute("role","status");d.textContent=t;document.body.appendChild(d);}tt=setTimeout(()=>{st.toast=null;document.querySelectorAll(".toast").forEach(x=>x.remove());},4000);}
 function keepM(){if(!st.modal)return;const g=id=>{const e=document.getElementById(id);return e?e.value:undefined;};
-  const c=g("mc");if(c!==undefined)st.modal.c=c;const cl=g("ncl");if(cl!==undefined)st.modal.client=cl;
+  const c=g("mc");if(c!==undefined)st.modal.c=c;const k=g("nk");if(k!==undefined)st.modal.kind=k;const cl=g("ncl");if(cl!==undefined)st.modal.client=cl;
   const n=g("un");if(n!==undefined)st.modal.name=n;const l=g("ul");if(l!==undefined)st.modal.login=l;const r=g("ur");if(r!==undefined)st.modal.role=r;}
 function openReq(id){
   st.view="list"; st.sel=id; st.detail=true; st.draft=""; st.pend=null; st.pendObj=null; st.msgs=[];
   watchMsgs(id); render();
 }
-function logout(){unsubscribeAll();if(msgRef)msgRef.off("value",msgH);msgRef=null;auth.signOut();Object.assign(st,{sel:null,detail:false,modal:null,reqs:[],users:[],msgs:[],me:null,uid:null,ready:false,login:{}});render();}
+function logout(){unsubscribeAll();if(msgRef)msgRef.off("value",msgH);msgRef=null;auth.signOut();Object.assign(st,{authMode:"login",tab:"sent_acc",mgrF:null,sel:null,detail:false,modal:null,reqs:[],users:[],msgs:[],me:null,uid:null,ready:false,login:{}});render();}
 
 /* ---------- события ---------- */
 document.addEventListener("submit",async e=>{
@@ -324,8 +345,17 @@ document.addEventListener("submit",async e=>{
   if(f==="login"){
     const u=$("#lu").value.trim().toLowerCase(), p=$("#lp").value;
     st.login={u}; st.busy=true; render();
-    try{await auth.signInWithEmailAndPassword(u+"@"+DOMAIN,p);}catch(err){st.login={u,err:errText(err)};}
+    try{await auth.signInWithEmailAndPassword(u.includes("@")?u:u+"@"+DOMAIN,p);}catch(err){st.login={u,err:errText(err)};}
     st.busy=false; render();
+  }
+  if(f==="forgot"){
+    const em=$("#fe").value.trim().toLowerCase();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){st.login={u:em,err:"Введите почту полностью, например name@gmail.com"};render();return;}
+    if(em.endsWith("@"+DOMAIN)){st.login={u:em,err:"У этой учётной записи нет настоящей почты. Пароль сбросит руководитель."};render();return;}
+    st.busy=true; render();
+    try{await auth.sendPasswordResetEmail(em); st.login={u:em,sent:true};}
+    catch(err){ if(err&&err.code==="auth/user-not-found") st.login={u:em,sent:true}; else st.login={u:em,err:errText(err)}; }
+    st.busy=false; render(); return;
   }
   if(f==="chpw"){
     const p1=$("#p1").value,p2=$("#p2").value;
@@ -348,10 +378,14 @@ document.addEventListener("click",async e=>{
     case "logout": logout(); return;
     case "notif": try{await Notification.requestPermission();}catch(x){} break;
     case "view": st.view=el.dataset.v; st.detail=false; break;
-    case "filter": st.filter=el.dataset.f; break;
-    case "goto": st.view="list"; st.filter=el.dataset.f; st.sel=null; st.detail=false; break;
+    case "tab": st.tab=el.dataset.t; break;
+    case "mgrclear": st.mgrF=null; break;
+    case "forgot": st.authMode="forgot"; st.login={u:($("#lu")||{}).value||""}; break;
+    case "tologin": st.authMode="login"; st.login={}; break;
+    case "goto": { const f=el.dataset.f; st.view="list"; st.sel=null; st.detail=false;
+      if(f.startsWith("s:")){st.tab=f.slice(2);st.mgrF=null;} else if(f.startsWith("m:")){st.mgrF=f.slice(2);} break; }
     case "open": return openReq(el.dataset.id);
-    case "openfrom": st.filter="all"; return openReq(el.dataset.id);
+    case "openfrom": { const rr=st.reqs.find(x=>x.id===el.dataset.id); if(rr) st.tab=rr.status; st.mgrF=null; return openReq(el.dataset.id); }
     case "back": st.detail=false; break;
     case "new": st.modal={type:"new"}; st.focus="#nr"; break;
     case "act": st.modal={type:"act",a:actionsFor(r).find(a=>a.id===el.dataset.a)}; st.focus="#mc"; break;
@@ -365,18 +399,17 @@ document.addEventListener("click",async e=>{
       catch(err){M.err=errText(err);}
       st.busy=false; break;}
     case "create": {
-      keepM(); const M=st.modal; const real=(M.real||"").trim(), cl=(M.client||"").trim();
-      if(!real||!cl){M.err="Укажите номер реализации и клиента.";break;}
-      if(!M.fileObj){M.err="Приложите накладную — без неё бухгалтер не сможет начать работу.";break;}
+      keepM(); const M=st.modal; const kind=(M.kind||"").trim(), cl=(M.client||"").trim(), cm=(M.c||"").trim();
+      if(!kind||!cl||!cm){M.err="Заполните вид запроса, клиента и комментарий.";break;}
       st.busy=true; render();
       try{
         const res=await db.ref("meta/next_no").transaction(v=>(v||1000)+1);
         const no=res.snapshot.val();
         const ref=db.ref("requests").push();
-        const invoice=await saveFile(M.fileObj,ref.key);
-        await ref.set({no,real,client:cl,comment:(M.c||"").trim(),invoice,mgr:st.uid,acc:"",status:"sent_acc",returns:0,created:TS,last_change:TS,last_msg:TS,last_msg_by:st.uid});
+        const invoice=M.fileObj?await saveFile(M.fileObj,ref.key):null;
+        await ref.set({no,kind,client:cl,comment:cm,invoice,mgr:st.uid,acc:"",status:"sent_acc",returns:0,created:TS,last_change:TS,last_msg:TS,last_msg_by:st.uid});
         await addMsg(ref.key,{sys:true,status:"sent_acc"});
-        st.modal=null; st.busy=false; st.filter="all"; toast("Заявка #"+no+" отправлена в бухгалтерию");
+        st.modal=null; st.busy=false; st.tab="sent_acc"; st.mgrF=null; toast("Заявка #"+no+" отправлена в бухгалтерию");
         return openReq(ref.key);
       }catch(err){M.err=errText(err);}
       st.busy=false; break;}
@@ -393,16 +426,19 @@ document.addEventListener("click",async e=>{
       st.busy=false; break;}
     case "unpend": st.pend=null; st.pendObj=null; break;
     case "file": openFile({id:el.dataset.fid}); return;
+    case "sharefile": try{await navigator.share({files:[st.modal.fileObj],title:st.modal.name});}catch(x){if(x&&x.name!=="AbortError")toast("Не удалось поделиться файлом");} return;
     case "adduser": st.modal={type:"adduser",role:"mgr"}; st.focus="#un"; break;
     case "saveuser": {
       keepM(); const M=st.modal, name=(M.name||"").trim(), login=(M.login||"").trim().toLowerCase();
-      if(!name||!login){M.err="Заполните ФИО и логин.";break;}
-      if(!/^[a-z0-9._-]{3,}$/.test(login)){M.err="Логин: латинские буквы, цифры, точка, дефис; минимум 3 символа.";break;}
+      const isHead=(M.role||"mgr")==="head";
+      if(!name||!login){M.err=isHead?"Заполните ФИО и почту.":"Заполните ФИО и логин.";break;}
+      if(isHead&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(login)){M.err="Укажите настоящую почту руководителя, например name@gmail.com.";break;}
+      if(!isHead&&!/^[a-z0-9._-]{3,}$/.test(login)){M.err="Логин: латинские буквы, цифры, точка, дефис; минимум 3 символа.";break;}
       const pw=genPw(); st.busy=true; render();
       // отдельный экземпляр Firebase, чтобы руководителя не «разлогинило» при создании учётки
       const sec=firebase.initializeApp(window.FIREBASE_CONFIG,"creator-"+Date.now());
       try{
-        const cred=await sec.auth().createUserWithEmailAndPassword(login+"@"+DOMAIN,pw);
+        const cred=await sec.auth().createUserWithEmailAndPassword(isHead?login:login+"@"+DOMAIN,pw);
         await db.ref("users/"+cred.user.uid).set({name,username:login,role:M.role||"mgr",active:true,must_change_pw:true});
         st.modal={type:"pw",title:"Сотрудник добавлен",login,pw};
       }catch(err){M.err=errText(err);}
@@ -421,10 +457,11 @@ document.addEventListener("input",e=>{
   const on=e.target.dataset.on;
   if(on==="q"){st.q=e.target.value;render();}
   if(on==="draft"){st.draft=e.target.value;}
-  if(on==="nreal"){keepM();st.modal.real=e.target.value;render();}
+
 });
 document.addEventListener("change",e=>{
   const on=e.target.dataset.on;
+  if(on==="urole"){keepM();st.modal.login="";st.modal.err=null;render();return;}
   if(on==="mfile"||on==="chatfile"){
     const f=e.target.files&&e.target.files[0]; if(!f) return;
     if(f.size>MAX_FILE){toast("В тестовой версии файл должен быть не больше 5 МБ");return;}
